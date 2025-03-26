@@ -1,1 +1,64 @@
-git archive --format=zip --output=repository.zip main
+# Base Image with Ubuntu + ROS + AI Dependencies
+FROM nvidia/cuda:11.8.0-devel-ubuntu20.04
+
+# Set Environment Variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=noetic
+
+# Install ROS Noetic, Python3, and essential dependencies
+RUN apt-get update && apt-get install -y \
+    ros-noetic-ros-base python3-pip python3-catkin-tools \
+    python3-opencv python3-rospkg ros-noetic-vision-opencv \
+    ros-noetic-cv-bridge libgl1-mesa-glx \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install AI/ML libraries
+RUN pip3 install --upgrade pip && pip3 install \
+    torch torchvision torchaudio \
+    opencv-python numpy scipy \
+    deepface face-recognition speechrecognition pyttsx3 \
+    dynamixel-sdk rospkg stable-baselines3 \
+    serial omni.isaac.core \
+    lidar haptic-feedback gesture-recognition cloud-learning
+
+# Install ROS Dependencies
+RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
+
+# Set up working directory
+WORKDIR /robot_ai
+
+# Copy project files
+COPY . /robot_ai
+
+# Expose ports for ROS and AI communication
+EXPOSE 11311 9090
+
+# Default command to keep container running
+CMD ["bash"]
+
+version: '3.8'
+
+services:
+  ai-humanoid:
+    container_name: ai_robot
+    build: .
+    privileged: true  # Allow access to hardware
+    network_mode: "host"  # Use host networking for ROS
+    volumes:
+      - /dev:/dev  # Access to hardware devices (cameras, sensors, motors)
+    environment:
+      - DISPLAY=$DISPLAY
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    runtime: nvidia  # Use GPU acceleration for AI models
+    stdin_open: true
+    tty: true
+
+# Build the Docker image
+docker-compose build
+
+# Run the container
+docker-compose up -d
+
+# Access the container (for debugging)
+docker exec -it ai_robot bash
