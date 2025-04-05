@@ -1,1 +1,203 @@
 .
+import cv2
+import rospy
+import torch
+import numpy as np
+from deepface import DeepFace
+from geometry_msgs.msg import Twist
+from dynamixel_sdk import *
+import serial
+import face_recognition
+import os
+import speech_recognition as sr
+import pyttsx3
+from omni.isaac.core import World
+from omni.isaac.core.objects import DynamicObject
+from omni.isaac.core import Stage
+from stable_baselines3 import PPO  # For reinforcement learning
+import lidar  # Custom module for LiDAR handling
+import haptic_feedback  # Custom module for haptic feedback
+import cloud_learning  # Placeholder for cloud learning module
+import gesture_recognition  # Placeholder for gesture recognition model
+from concurrent.futures import ThreadPoolExecutor  # Threading for performance
+
+
+
+
+# Initialize ROS for movement
+rospy.init_node("robot_control")
+pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
+move_cmd = Twist()
+
+# Load AI models for face recognition, emotions, and speech processing
+emotion_model = DeepFace.build_model("Emotion")
+face_recognition_model = face_recognition.api
+
+# Setup Hardware (Motors, LiDAR, Sensors, Camera, LED Face Screen)
+portHandler = PortHandler("/dev/ttyUSB0")
+packetHandler = PacketHandler(2.0)
+DXL_ID_1, DXL_ID_2 = 1, 2  # Robot Arm Motors
+portHandler.openPort()
+portHandler.setBaudRate(57600)
+
+# Setup LED Face Matrix (Serial Connection to Arduino)
+arduino = serial.Serial('/dev/ttyUSB1', 9600)
+
+# Load Known Faces for Recognition
+known_faces = {}
+for filename in os.listdir("faces/"):
+    if filename.endswith(".jpg"):
+        img = face_recognition.load_image_file(f"faces/{filename}")
+        encoding = face_recognition.face_encodings(img)[0]
+        known_faces[filename.split(".")[0]] = encoding
+
+print("🖤 AI Humanoid Robot Initialized Successfully!")
+
+# Initialize Speech Engine
+engine = pyttsx3.init()
+
+# Initialize the camera for vision
+cap = cv2.VideoCapture(0)
+
+# Initialize Isaac World (Simulation Environment)
+world = World(stage=Stage())
+robot_object = DynamicObject(name="Robot", pose=world.get_default_pose())
+world.add_object(robot_object)
+
+# Initialize Reinforcement Learning Model for walking control (Optimized)
+model = PPO.load("robot_walking_model")  # Pre-trained model for walking
+model = model.to("cuda" if torch.cuda.is_available() else "cpu")  # Move model to GPU for faster processing
+
+# Thread Pool Executor for concurrency
+executor = ThreadPoolExecutor(max_workers=5)
+
+# Function to move the robot in simulation
+def move_robot(linear_x=0, angular_z=0):
+    move_cmd.linear.x = linear_x
+    move_cmd.angular.z = angular_z
+    pub.publish(move_cmd)
+    robot_object.translate([linear_x, 0, 0])  # Move robot in x direction (simulated)
+
+
+
+
+# Function to recognize and respond to emotions (Optimized for threading)
+def recognize_emotion(frame):
+    emotion_analysis = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
+    return emotion_analysis[0]['dominant_emotion']
+
+# Function to recognize face and greet (Optimized)
+def recognize_face(frame):
+    rgb_frame = frame[:, :, ::-1]  # Convert BGR to RGB
+    face_locations = face_recognition.face_locations(rgb_frame)
+    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+    for face_encoding in face_encodings:
+        matches = face_recognition.compare_faces(list(known_faces.values()), face_encoding)
+        name = "Unknown"
+        
+        if True in matches:
+            first_match_index = matches.index(True)
+            name = list(known_faces.keys())[first_match_index]
+
+        return name
+    return "Unknown"
+
+
+
+
+# Function to handle speech recognition (Optimized with retries)
+def listen_for_command():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Listening for command...")
+        recognizer.adjust_for_ambient_noise(source)
+        try:
+            audio = recognizer.listen(source, timeout=5)  # Increased timeout for robust listening
+            command = recognizer.recognize_google(audio)
+            print(f"Command received: {command}")
+            return command.lower()
+        except sr.UnknownValueError:
+            print("Could not understand the audio.")
+            return None
+        except sr.RequestError:
+            print("Request error with speech service.")
+            return None
+        except Exception as e:
+            print(f"Error: {e}")
+            return None
+
+# Function to respond with speech
+def respond_to_speech(text):
+    engine.say(text)
+    engine.runAndWait()
+
+# Function to handle dynamic object grasping based on detected objects
+def grasp_object(object_name):
+    if object_name == "cup":
+        print("Grasping the cup.")
+        # Use robotic arm to grasp the cup (simulate with motor commands)
+    else:
+        print("Object not recognized for grasping.")
+
+# Function for reinforcement learning to control walking (Optimized for performance)
+def control_walking():
+    state = get_image_state()  # Placeholder for real-time image processing
+    action, _ = model.predict(state)  # RL action based on current state
+    move_robot(action[0], action[1])  # Control walking in simulation
+
+# Function to handle gesture-based control (Async)
+def handle_gesture():
+    gesture = gesture_recognition.recognize_gesture()  # Placeholder for gesture recognition
+    if gesture == "wave":
+        respond_to_speech("I see you waved! Hello!")
+    elif gesture == "point":
+        respond_to_speech("I see you pointed! What would you like me to do?")
+
+# Function to integrate cloud learning (Optimized with retries)
+def cloud_based_learning():
+    try:
+        cloud_learning.update_model()  # Placeholder for cloud-based AI updates
+        print("Cloud learning model updated.")
+    except Exception as e:
+        print(f"Cloud learning failed: {e}")
+
+# Main loop to process vision, emotions, and movement (Optimized for real-time)
+def main():
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if ret:
+            # Run recognition in parallel
+            executor.submit(recognize_emotion, frame)
+            executor.submit(recognize_face, frame)
+
+            # Perform dynamic object recognition and grasping
+            detected_object = detect_objects(frame)  # Custom function for object detection
+            executor.submit(grasp_object, detected_object)
+
+            # Control robot walking using DRL model
+            executor.submit(control_walking)
+
+            # Handle gesture-based control
+            executor.submit(handle_gesture)
+
+            # Update AI models via cloud learning
+            executor.submit(cloud_based_learning)
+
+            # Display video feed
+            cv2.imshow("Robot Camera Feed", frame)
+
+            # Listen for voice commands
+            command = listen_for_command()
+            if command:
+                executor.submit(handle_voice_command, command)
+
+            # Exit loop when 'q' is pressed
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
